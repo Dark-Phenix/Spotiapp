@@ -10,6 +10,7 @@ import com.google.gson.TypeAdapter;
 import com.google.gson.reflect.TypeToken;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -92,5 +93,11 @@ public class FileMethods {
             return null;
         }
     }
+
+    public static boolean fileExists(Context context, String filename) {
+        File file = new File(context.getFilesDir(), filename);
+        return file.exists();
+    }
+
 
 }

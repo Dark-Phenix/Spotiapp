@@ -7,10 +7,14 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import kaaes.spotify.webapi.android.SpotifyCallback;
 import kaaes.spotify.webapi.android.SpotifyError;
@@ -36,6 +40,12 @@ public class Favourite {
     public static final String ARTIST_DATABASE = "artist_fav_database.json";
     public static final String SONG_DATABASE = "favourite_database.json";
 
+    public static final String GENRE_DATABASE = "artist_genres.json";
+
+
+    private static final long CACHE_VALIDITY_MS = 24 * 60 * 60 * 1000; // 24 Stunden
+    //TODO statt automatisch nach mehr als 24 stunden komplett neu zu machen, lieber immer
+    //wieder ab letzten mal schauen welche seit dem dazu gekommen sind und dann appenden
     private final SpotifyService spotify;
 
     private final Context context;
@@ -115,105 +125,238 @@ public class Favourite {
         }
         return songs;
     }
+
+
+    /**
+     * Ensures that the favourite songs database is available.
+     * If the file already exists and is recent enough, the existing file is used and the listener is triggered.
+     * Otherwise, the database is recreated via {@link #create_fav_database_async()}.
+     *
+     * @return A CompletableFuture that completes when the database is ready.
+     */
+    public CompletableFuture<Void> ensureFavDatabaseAsync() {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
+        boolean fileExists = FileMethods.fileExists(context, SONG_DATABASE);
+        long lastUpdated = msharedPreferences.getLong("time-favourite", 0);
+        long now = System.currentTimeMillis();
+        long cacheDuration = 1000L * 60 * 60 * 12; // 12 Stunden
+
+        if (fileExists && (now - lastUpdated) < cacheDuration) {
+            Log.d("DATABASE", "Song-DB bereits vorhanden, Listener wird direkt getriggert");
+
+            // Falls Genres fehlen, trotzdem generieren
+            maybeGenerateGenres();
+
+            if (listener != null) {
+                listener.onFavDatabaseReady();
+            }
+
+            future.complete(null);
+        } else {
+            create_fav_database_async().thenRun(() -> {
+                maybeGenerateGenres();
+
+                // Der Listener wird bereits in create_fav_database_async() getriggert
+                future.complete(null);
+            }).exceptionally(ex -> {
+                future.completeExceptionally(ex);
+                return null;
+            });
+        }
+
+        return future;
+    }
+
+    // Diese neue Methode prüft nur, ob artist_genres.json fehlt, und erzeugt sie dann
+    private void maybeGenerateGenres() {
+        if (!FileMethods.fileExists(context, GENRE_DATABASE)) {
+            Log.d("DATABASE", "Genre-DB fehlt – wird aus Artist-DB erzeugt.");
+            loadAndCacheGenresFromArtistDatabase();
+        } else {
+            Log.d("DATABASE", "Genre-DB bereits vorhanden.");
+        }
+    }
+
+
+
+    /**
+     * Prüft, ob die Künstler-Datenbank-Datei existiert und der gespeicherte Cache-Timestamp noch gültig ist.
+     * Wenn ja, wird keine neue Spotify-Abfrage gemacht und ein sofort abgeschlossenes CompletableFuture zurückgegeben.
+     * Wenn nein, wird die Methode {@link #create_artist_database_async(Set, String)} aufgerufen, um die Daten neu zu laden und zu speichern.
+     *
+     * Nach erfolgreichem Abschluss wird der Timestamp in SharedPreferences aktualisiert.
+     *
+     * @param artistIDs Menge der Künstler-IDs, die abgefragt werden sollen.
+     * @return CompletableFuture, das abgeschlossen wird, wenn die Künstler-Datenbank aktuell vorliegt oder neu erstellt wurde.
+     */
+    public CompletableFuture<Void> ensureArtistDatabaseAsync(Set<String> artistIDs) {
+        boolean fileExists = FileMethods.fileExists(context, ARTIST_DATABASE);
+        long lastFetchTime = msharedPreferences.getLong("time-artist", 0);
+        long now = System.currentTimeMillis();
+
+        if (fileExists && (now - lastFetchTime) < CACHE_VALIDITY_MS) {
+            return CompletableFuture.completedFuture(null);
+        } else {
+            return create_artist_database_async(artistIDs, ARTIST_DATABASE)
+                    .thenRun(() -> msharedPreferences.edit().putLong("time-artist", now).apply());
+        }
+    }
+
+
     /**
      * Saves all FavouriteSongs in one JSON Datei: SONG_DATABASE
      */
-    public void create_fav_database() {
-        List<SavedTrack> allTracks = new ArrayList<>();
+    private CompletableFuture<Void> create_fav_database_async() {
+        CompletableFuture<Void> overallFuture = new CompletableFuture<>();
+        List<SavedTrack> allTracks = Collections.synchronizedList(new ArrayList<>());
 
         spotify.getMySavedTracks(new SpotifyCallback<>() {
             @Override
             public void success(Pager<SavedTrack> savedTrackPager, Response response) {
-                Log.d("Anfrage", "Erfolgreich");
-                int len = savedTrackPager.total;
+                int total = savedTrackPager.total;
+                List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-                for (int i = 0; i < len; i += 50) {
-                    spotify.getMySavedTracks(Map.of("market", "DE", "limit", 50, "offset", i), new SpotifyCallback<>() {
+                for (int i = 0; i < total; i += 50) {
+                    int offset = i;
+                    CompletableFuture<Void> future = new CompletableFuture<>();
+
+                    spotify.getMySavedTracks(Map.of("market", "DE", "limit", 50, "offset", offset), new SpotifyCallback<>() {
                         @Override
-                        public void success(Pager<SavedTrack> savedTrackPager2, Response response) {
-                            List<SavedTrack> myTracks = savedTrackPager2.items;
-                            allTracks.addAll(myTracks);
-                            if (allTracks.size() == len) // After all requests
-                            {
-                                FileMethods.inFile(context, SONG_DATABASE, allTracks);
-
-                                // all artist IDs in a Set
-                                Set<String> artIDs = new HashSet<>();
-                                for (SavedTrack k : allTracks)
-                                {
-                                    for (ArtistSimple as : k.track.artists)
-                                        artIDs.add(as.id);
-                                }
-
-                                create_artist_database(artIDs, ARTIST_DATABASE);
-
-                                long timestamp = System.currentTimeMillis();
-                                msharedPreferences.edit().putLong("time-favourite", timestamp).apply();
-                                Log.d("ANFRAGE", String.valueOf(timestamp));
-                            }
+                        public void success(Pager<SavedTrack> page, Response response) {
+                            allTracks.addAll(page.items);
+                            future.complete(null);
                         }
 
                         @Override
-                        public void failure(SpotifyError spotifyError) {
-                            Log.e("REQUEST", spotifyError.toString());
+                        public void failure(SpotifyError error) {
+                            future.completeExceptionally(error);
                         }
                     });
+
+                    futures.add(future);
                 }
 
-                // Signal: Daten sind fertig
-                if (listener != null) {
-                    listener.onFavDatabaseReady();
-                }
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                        .thenRun(() -> {
+                            FileMethods.inFile(context, SONG_DATABASE, allTracks);
+
+                            // artist IDs sammeln
+                            Set<String> artistIDs = allTracks.stream()
+                                    .flatMap(track -> track.track.artists.stream())
+                                    .map(artist -> artist.id)
+                                    .collect(Collectors.toSet());
+
+                            create_artist_database_async(artistIDs, ARTIST_DATABASE)
+                                    .thenRun(() -> {
+                                        msharedPreferences.edit().putLong("time-favourite", System.currentTimeMillis()).apply();
+
+                                        // Listener aufrufen, wenn alles fertig ist
+                                        if (listener != null) {
+                                            listener.onFavDatabaseReady();
+                                        }
+                                        overallFuture.complete(null);
+                                    })
+                                    .exceptionally(ex -> {
+                                        overallFuture.completeExceptionally(ex);
+                                        return null;
+                                    });
+                        })
+                        .exceptionally(ex -> {
+                            overallFuture.completeExceptionally(ex);
+                            return null;
+                        });
             }
 
             @Override
-            public void failure(SpotifyError spotifyError) {
-                Log.e("REQUEST", spotifyError.toString());
+            public void failure(SpotifyError error) {
+                overallFuture.completeExceptionally(error);
             }
         });
+
+        return overallFuture;
     }
 
 
-    /**
-     * Creates a JSON File from a Set of artist IDs
-     * @param artist_ids Die IDs der Artists
-     * @param filename Der Filename
-     */
-    public void create_artist_database(Set<String> artist_ids, String filename) {
-        List<Artist> allArtists = new ArrayList<>();
-        String [] art_arr = artist_ids.toArray(new String[0]); //Set to arr
-        int len = art_arr.length; //length
+    private CompletableFuture<Void> create_artist_database_async(Set<String> artist_ids, String filename) {
+        List<Artist> allArtists = Collections.synchronizedList(new ArrayList<>());
+        String[] art_arr = artist_ids.toArray(new String[0]);
+        int len = art_arr.length;
 
-        for (int j = 0; j<len; j+=50){// steps in size of 50, because its the maximum of 1 request
-            int end = j+50;    //end of the inner for loop
-            if (end>len)
-            {
-                end = len;     //not array out of bounds
-            }
-            StringBuilder all = new StringBuilder(); //String Builder, because
-            // the Ids need to be in a comma separated String
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-            all.append(art_arr[j]);     //before first element no comma
-            for (int i = j+1; i<end; i++)
-            {
-                all.append(",").append(art_arr[i]); //else comma separated
+        for (int j = 0; j < len; j += 50) {
+            int end = Math.min(j + 50, len);
+            StringBuilder all = new StringBuilder();
+            all.append(art_arr[j]);
+            for (int i = j + 1; i < end; i++) {
+                all.append(",").append(art_arr[i]);
             }
-            spotify.getArtists(all.toString(), new Callback<>() {
+
+            String idsParam = all.toString();
+            CompletableFuture<Void> future = new CompletableFuture<>();
+
+            spotify.getArtists(idsParam, new Callback<>() {
                 @Override
                 public void success(Artists artists, Response response) {
-                    allArtists.addAll(artists.artists); //append request to all
-                    if (allArtists.size() == len)   // after last request
-                    {
-                        FileMethods.inFile(context, filename, allArtists); // write in file
-                    }
+                    allArtists.addAll(artists.artists);
+                    future.complete(null);
                 }
 
                 @Override
                 public void failure(RetrofitError error) {
-                    Log.e("ARTIST_DATABASE", error.toString());
+                    future.completeExceptionally(error);
                 }
             });
+
+            futures.add(future);
         }
 
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenRun(() -> FileMethods.inFile(context, filename, allArtists));
     }
+
+    public Set<String> loadAndCacheGenresFromArtistDatabase() {
+        List<Artist> allArtists = FileMethods.listFromJson(context, ARTIST_DATABASE, Artist.class);
+        if (allArtists == null || allArtists.isEmpty()) {
+            Log.w("Favourite", "Artist database is empty or missing.");
+            return Collections.emptySet();
+        }
+
+        Set<String> allGenres = new HashSet<>();
+        for (Artist artist : allArtists) {
+            if (artist.genres != null) {
+                allGenres.addAll(artist.genres);
+            }
+        }
+
+        // Genres als Liste speichern (JSON-Serialisierung braucht oft Liste statt Set)
+        List<String> genreList = new ArrayList<>(allGenres);
+        FileMethods.inFile(context, GENRE_DATABASE, genreList);
+
+        Log.d("Favourite", "Collected and cached " + allGenres.size() + " unique genres.");
+
+        return allGenres;
+    }
+
+    public Set<String> loadGenresFromCache() {
+        List<String> cachedGenres = FileMethods.listFromJson(context, GENRE_DATABASE, String.class);
+        if (cachedGenres == null) {
+            Log.w("Favourite", "Genre cache file missing or empty.");
+            return Collections.emptySet();
+        }
+        return new HashSet<>(cachedGenres);
+    }
+
+    public Set<String> getGenres(boolean forceReload) {
+        if (forceReload || !FileMethods.fileExists(context, GENRE_DATABASE)) {
+            // Neu laden und cachen
+            return loadAndCacheGenresFromArtistDatabase();
+        } else {
+            // Aus Cache laden
+            return loadGenresFromCache();
+        }
+    }
+
+
 }

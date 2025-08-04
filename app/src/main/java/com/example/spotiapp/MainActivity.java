@@ -1,19 +1,29 @@
 package com.example.spotiapp;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SearchView;
 import android.widget.TextView;
 
 import com.android.volley.toolbox.Volley;
+import com.example.spotiapp.ui.GenreAdapter;
 import com.example.spotiapp.ui.PlaylistView;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -31,11 +41,13 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import kaaes.spotify.webapi.android.SpotifyApi;
 import kaaes.spotify.webapi.android.SpotifyService;
@@ -62,7 +74,7 @@ public class MainActivity extends AppCompatActivity {
     ScrollView mScrollView;
     LinearLayout mLayout;
 
-    private LinearLayout verticalLayout;
+    FrameLayout loadingOverlay;
 
 
 
@@ -74,6 +86,7 @@ public class MainActivity extends AppCompatActivity {
         mEditGenre = findViewById(R.id.genreText);
         mScrollView = findViewById(R.id.scroll_view);
         mLayout = findViewById(R.id.vertical_layout);
+        Log.d("MainActivity", "mLayout after findViewById: " + mLayout);
         loadingOverlay = findViewById(R.id.loading_overlay);  // <== Overlay initialisieren
 
         msharedPreferences = this.getSharedPreferences("SPOTIFY", 0);
@@ -141,12 +154,39 @@ public class MainActivity extends AppCompatActivity {
         SpotifyService spotify = api.getService();
         String userid = msharedPreferences.getString("userid", "No User");
 
+
         Favourite fav = new Favourite(spotify, this, msharedPreferences);
-        fav.create_fav_database();
+
+        // Listener setzen, bevor `create_fav_database()` aufgerufen wird!
+        fav.setFavDatabaseListener(() -> {
+            Log.d("DATABASE", "Callback received");
+
+            Set<MyTrack> mtl = fav.createMyTrackSet();
+            Log.d("DATABASE READY", "My track list size: " + mtl.size());
+            PlaylistService playlistService = new PlaylistService(spotify, userid, this);
+
+            Set<String> genreList2 = new HashSet<>();
+            //genreList2.add("uk drill");
+            //playlistService.createPlaylist("app-uk-drill", "automate from Android App", genreList2, null);
+
+            loadAllPlaylists(mtl, playlistService);
+            showLoading(false);
+        });
+
+        fav.ensureFavDatabaseAsync()
+                .thenRun(() -> {
+                    // Hier kommt der Code, der ausgeführt werden soll, wenn die Favoriten-Datenbank bereit ist.
+                    // Zum Beispiel UI-Update oder Listener informieren
+                })
+                .exceptionally(ex -> {
+                    // Fehlerbehandlung, falls etwas schiefgeht
+                    ex.printStackTrace();
+                    return null;
+                });
 
 
-        Set<MyTrack> mtl = fav.createMyTrackSet();
-        PlaylistService playlistService = new PlaylistService(spotify, userid, this);
+
+
 
 //        Set<String> genreList = new HashSet<>();
 //        genreList.add("rap");
@@ -155,18 +195,8 @@ public class MainActivity extends AppCompatActivity {
 //        Set<String> genreList2 = new HashSet<>();
 //        genreList2.add("german hip hop");
 //        playlistService.createPlaylist("app-german", "automate from Android App", genreList2, null);
-        Set<String> genreList2 = new HashSet<>();
-        genreList2.add("uk hip hop");
-        playlistService.createPlaylist("app-uk", "automate from Android App", genreList2, null);
 
-
-        loadAllPlaylists(mtl, playlistService);
-
-
-        findViewById(R.id.updateButton).setOnClickListener(view -> fav.create_fav_database()); //IN JSON SPEICHERN
-
-
-
+        //findViewById(R.id.updateButton).setOnClickListener(view -> fav.create_fav_database()); //IN JSON SPEICHERN TODO update was anderes als erstmalig erstellen?
     }
 
     private void createAppPlaylists(Set<MyTrack> mtl, PlaylistService playlistService)
@@ -179,6 +209,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void createReadyPlaylist(Set<MyTrack> mtl, PlaylistService playlistService, String playlistID)
     {
+        Log.d("MainActivity", "Create Ready Playlist; mtl size:" + mtl.size());
         MyPlaylist playlist = playlistService.getPlaylist(playlistID);
         Set<String> genres = playlist.getGenres();
         String id = playlist.getId();
@@ -191,8 +222,12 @@ public class MainActivity extends AppCompatActivity {
     //load all playlists, should be run at start
     private void loadAllPlaylists(Set<MyTrack> mtl, PlaylistService playlistService)
     {
-        Log.d("Test", String.valueOf(playlistService.getMyPlaylistsMap().values().size()));
-        verticalLayout.removeAllViewsInLayout();
+        Log.d("Test", "Anzahl an Playlists: " + playlistService.getMyPlaylistsMap().size());
+        if (mLayout == null) {
+            Log.e("MainActivity", "mLayout is null in loadAllPlaylists!");
+            return;
+        }
+        mLayout.removeAllViewsInLayout();
         for (MyPlaylist my : playlistService.getMyPlaylistsMap().values()) {
             PlaylistView myView = new PlaylistView(this);
             myView.setPlaylist(R.mipmap.playlist_icon, my.getName());
@@ -212,7 +247,7 @@ public class MainActivity extends AppCompatActivity {
                 Picasso.get().load(imgPath).into(imgV);
                 Log.d("PICASSO", imgPath);
             }
-            verticalLayout.addView(myView);
+            mLayout.addView(myView);
         }
     }
 
@@ -243,43 +278,6 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    //Erstellt eine JSON DATEI
-    private void connected3() {
-        TextView helloText;
-        Gson gson = new GsonBuilder().setPrettyPrinting().create();
-
-        Map<String, String> config1 = new HashMap<>();
-        config1.put("hello1.1", "world1.1");
-        config1.put("hello1.2", "world1.2");
-
-        Map<String, String> config2 = new HashMap<>();
-        config2.put("hello2.1", "world2.1");
-        config2.put("hello2.2", "world2.2");
-
-        TestClass testClass = new TestClass(config1, config2);
-
-        Log.d("zzz", gson.toJson(testClass));
-
-        String text = gson.toJson(testClass);
-        FileOutputStream fos = null;
-
-        try {
-            fos = openFileOutput("main.json", MODE_PRIVATE);
-            fos.write(text.getBytes());
-        } catch (IOException e) {
-            e.printStackTrace();
-        } finally {
-            if (fos != null) {
-                try {
-                    fos.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-        }
-
-
-    }
 
     //Standard Methode
     private void connectedStandard() {
@@ -313,14 +311,13 @@ public class MainActivity extends AppCompatActivity {
                     Log.d("STARTING", "GOT AUTH TOKEN");
                     editor.apply();
 
+                    accessToken = response.getAccessToken();
+
                     if (!msharedPreferences.contains("userid")) {
-                        waitForUserInfo();
+                        waitForUserInfo(); // -> ruft connected() nach dem Abrufen auf
+                    } else {
+                        connected();
                     }
-
-
-
-                    accessToken = response.getAccessToken(); // this way or with sharedPreferences
-                    connected();
                     break;
 
                 // Auth flow returned an error

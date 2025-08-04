@@ -49,8 +49,15 @@ public class PlaylistService {
         playlistPrefs = context.getSharedPreferences("PLAYLISTS", 0);
 
         _imagesUpdated = false;
+
+        // Datei anlegen, wenn nicht existiert
+        if (!FileMethods.fileExists(context, PLAYLIST_DATABASE)) {
+            FileMethods.inFile(context, PLAYLIST_DATABASE, new ArrayList<MyPlaylist>());
+        }
+
         loadPlaylists();
     }
+
 
     private synchronized void loadPlaylists()
     {
@@ -188,7 +195,7 @@ public class PlaylistService {
         spotify.getPlaylist(userID, playlistID, new SpotifyCallback<>() {
             @Override
             public void success(Playlist playlist, Response response) {
-                if (playlist.images.size() > 0) {
+                if (playlist.images != null && !playlist.images.isEmpty()) {
                     String imageUrl = playlist.images.get(0).url; // Die URL des Playlist-Bildes
                     Log.d("PLAYLIST_IMG", imageUrl);
                     //_images.put(playlistID, imageUrl);
@@ -209,6 +216,7 @@ public class PlaylistService {
         });
         Log.d("PLAYLIST_IMG", "ENDE");
     }
+
 
     public synchronized boolean getUpdated()
     {
