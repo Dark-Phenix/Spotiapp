@@ -60,9 +60,9 @@ dependencies {
     implementation(name: 'spotify-app-remote-release-0.7.2', ext: 'aar')
     implementation 'androidx.annotation:annotation:1.9.1'
     implementation 'com.android.volley:volley:1.2.1' //Fuer RequestQueue
-    implementation "com.google.code.gson:gson:2.9.1"    //Fuer die Anfragen und JSON Objects
+    implementation "com.google.code.gson:gson:2.13.1"    //Fuer die Anfragen und JSON Objects
     implementation 'com.github.kaaes:spotify-web-api-android:0.4.1'
-    implementation 'com.spotify.android:auth:2.0.2'
+    implementation 'com.spotify.android:auth:2.1.2'
 
     implementation 'androidx.browser:browser:1.9.0'
 

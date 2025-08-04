@@ -41,6 +41,12 @@ public class Favourite {
     private final Context context;
 
     private SharedPreferences msharedPreferences;
+    private FavDatabaseListener listener;
+
+    public void setFavDatabaseListener(FavDatabaseListener listener) {
+        this.listener = listener;
+    }
+
 
     public Favourite(SpotifyService spoService, Context con, SharedPreferences sharedPreferences){
         spotify = spoService;
@@ -152,6 +158,11 @@ public class Favourite {
                             Log.e("REQUEST", spotifyError.toString());
                         }
                     });
+                }
+
+                // Signal: Daten sind fertig
+                if (listener != null) {
+                    listener.onFavDatabaseReady();
                 }
             }
 

@@ -65,6 +65,8 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout verticalLayout;
 
 
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
@@ -72,16 +74,21 @@ public class MainActivity extends AppCompatActivity {
         mEditGenre = findViewById(R.id.genreText);
         mScrollView = findViewById(R.id.scroll_view);
         mLayout = findViewById(R.id.vertical_layout);
-        verticalLayout = mScrollView.findViewById(R.id.vertical_layout);
-
-
-        spotifyAuthentication();
-
+        loadingOverlay = findViewById(R.id.loading_overlay);  // <== Overlay initialisieren
 
         msharedPreferences = this.getSharedPreferences("SPOTIFY", 0);
         queue = Volley.newRequestQueue(this);
 
+        showLoading(true);  // <== Loading anzeigen
+        spotifyAuthentication();  // <== Auth starten
     }
+
+    private void showLoading(boolean show) {
+        if (loadingOverlay != null) {
+            loadingOverlay.setVisibility(show ? View.VISIBLE : View.GONE);
+        }
+    }
+
 
 
 
@@ -135,6 +142,7 @@ public class MainActivity extends AppCompatActivity {
         String userid = msharedPreferences.getString("userid", "No User");
 
         Favourite fav = new Favourite(spotify, this, msharedPreferences);
+        fav.create_fav_database();
 
 
         Set<MyTrack> mtl = fav.createMyTrackSet();
@@ -155,7 +163,7 @@ public class MainActivity extends AppCompatActivity {
         loadAllPlaylists(mtl, playlistService);
 
 
-        //findViewById(R.id.updateButton).setOnClickListener(view -> fav.create_fav_database()); //IN JSON SPEICHERN
+        findViewById(R.id.updateButton).setOnClickListener(view -> fav.create_fav_database()); //IN JSON SPEICHERN
 
 
 
@@ -237,20 +245,20 @@ public class MainActivity extends AppCompatActivity {
 
     //Erstellt eine JSON DATEI
     private void connected3() {
-            TextView helloText;
-            Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        TextView helloText;
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
-            Map<String, String> config1 = new HashMap<>();
-            config1.put("hello1.1", "world1.1");
-            config1.put("hello1.2", "world1.2");
+        Map<String, String> config1 = new HashMap<>();
+        config1.put("hello1.1", "world1.1");
+        config1.put("hello1.2", "world1.2");
 
-            Map<String, String> config2 = new HashMap<>();
-            config2.put("hello2.1", "world2.1");
-            config2.put("hello2.2", "world2.2");
+        Map<String, String> config2 = new HashMap<>();
+        config2.put("hello2.1", "world2.1");
+        config2.put("hello2.2", "world2.2");
 
-            TestClass testClass = new TestClass(config1, config2);
+        TestClass testClass = new TestClass(config1, config2);
 
-            Log.d("zzz", gson.toJson(testClass));
+        Log.d("zzz", gson.toJson(testClass));
 
         String text = gson.toJson(testClass);
         FileOutputStream fos = null;
@@ -289,12 +297,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        super.onActivityResult(requestCode, resultCode, intent);
 
+        super.onActivityResult(requestCode, resultCode, intent);
         // Check if result comes from the correct activity
         if (requestCode == REQUEST_CODE) {
             AuthorizationResponse response = AuthorizationClient.getResponse(resultCode, intent);
-
+            Log.d("SPOTIFY", "Auth type: " + response.getType());
+            Log.d("SPOTIFY", "Auth error: " + response.getError());
             switch (response.getType()) {
                 // Response was successful and contains auth token
                 case TOKEN:
@@ -322,6 +331,7 @@ public class MainActivity extends AppCompatActivity {
 
                 // Most likely auth flow was cancelled
                 default:
+                    Log.d("DEFAULT", "OTHER CASE");
                     // Handle other cases
             }
         }
